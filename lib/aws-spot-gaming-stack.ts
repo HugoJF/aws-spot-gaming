@@ -1,5 +1,5 @@
 import {range} from "./utils";
-import {Stack, StackProps} from 'aws-cdk-lib';
+import {CfnMapping, CfnParameter, Stack, StackProps} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -18,7 +18,6 @@ export class AwsSpotGamingStack extends Stack {
     constructor(scope: Construct, id: string, props?: StackProps) {
         super(scope, id, props);
 
-        const running = true;
         const usesDataSync = false;
         const gameName = 'zomboid';
         const dnsName = undefined;
@@ -36,6 +35,7 @@ export class AwsSpotGamingStack extends Stack {
 
         const containerMemory = 3 * 1024;
         const containerImage = 'cyrale/project-zomboid:latest';
+        const containerUserId = 1000;
         const containerEnvironment = {
             RCON_PASSWORD: 'averycoolpassword',
             ADMIN_PASSWORD: 'theadminpassword',
@@ -63,9 +63,23 @@ export class AwsSpotGamingStack extends Stack {
         // DO NOT MODIFY BELOW THIS LINE
         // DO NOT MODIFY BELOW THIS LINE
 
-        const desiredCapacity = running ? 1 : 0;
         const recordName = `${dnsName ?? gameName}.${hostedZoneName}`;
         const fsMountPath = `/opt/${gameName}`;
+
+        const stateParameter = new CfnParameter(this, 'ServerState', {
+            type: 'String',
+            allowedValues: ['Running', 'Stopped'],
+            default: 'Stopped',
+        })
+
+        const stateMapping = new CfnMapping(this, 'StateMapping', {
+            mapping: {
+                'Running': {DesiredCapacity: 1},
+                'Stopped': {DesiredCapacity: 0},
+            }
+        })
+
+        const desiredCapacity = stateMapping.findInMap(stateParameter.valueAsString, 'DesiredCapacity');
 
         const setDnsRole = new iam.Role(this, 'SetDnsRole', {
             assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -166,17 +180,17 @@ export class AwsSpotGamingStack extends Stack {
                 'yum install -y amazon-efs-utils',
                 `mkdir ${fsMountPath}`,
                 `mount -t efs ${fs.fileSystemId}:/ ${fsMountPath}`,
-                `chown 1000:1000 ${fsMountPath}`,
-            ].join('\n').trim()),
+                `chown ${containerUserId}:${containerUserId} ${fsMountPath}`,
+            ].join('\n')),
         })
 
         const autoScalingGroup = new autoscaling.CfnAutoScalingGroup(this, 'AutoScalingGroup', {
             autoScalingGroupName: `${gameName}-asg`,
             availabilityZones: vpc.availabilityZones,
             launchConfigurationName: autoScalingLaunchConfiguration.ref,
-            desiredCapacity: String(desiredCapacity),
-            maxSize: String(desiredCapacity),
-            minSize: String(desiredCapacity),
+            desiredCapacity: desiredCapacity,
+            maxSize: desiredCapacity,
+            minSize: desiredCapacity,
             vpcZoneIdentifier: vpc.publicSubnets.map(subnet => subnet.subnetId),
         });
 
@@ -193,7 +207,7 @@ export class AwsSpotGamingStack extends Stack {
         // Used to resolve EC2 AMI
         stackUpdateRole.addToPolicy(new iam.PolicyStatement({
             effect: iam.Effect.ALLOW,
-            actions: ['ec2:DescribeImages'],
+            actions: ['ec2:DescribeImages', 'ec2:DescribeAvailabilityZones', 'ec2:DescribeAccountAttributes', 'ec2:DescribeSubnets'],
             resources: ['*'],
         }));
 
@@ -201,14 +215,7 @@ export class AwsSpotGamingStack extends Stack {
         stackUpdateRole.addToPolicy(new iam.PolicyStatement({
             effect: iam.Effect.ALLOW,
             actions: ['ssm:GetParameters'],
-            resources: ['arn:aws:ssm:*::parameter/aws*'],
-        }));
-
-        // Used to update the ECS service DesiredCount
-        stackUpdateRole.addToPolicy(new iam.PolicyStatement({
-            effect: iam.Effect.ALLOW,
-            actions: ['ecs:DescribeServices', 'ecs:UpdateService'],
-            resources: ['arn:aws:ssm:*::parameter/aws*'],
+            resources: ['arn:aws:ssm:*:*:parameter/*'],
         }));
 
         // # Used to update AutoScaling DesiredCapacity
@@ -258,25 +265,33 @@ export class AwsSpotGamingStack extends Stack {
             readOnly: false,
         })
 
-        new ecs.CfnService(this, 'Service', {
+        const ecsService = new ecs.CfnService(this, 'Service', {
             cluster: cluster.clusterName,
             serviceName: gameName,
             taskDefinition: taskDefinition.taskDefinitionArn,
-            desiredCount: desiredCapacity,
+            desiredCount: desiredCapacity as any as number,
             deploymentConfiguration: {
                 minimumHealthyPercent: 0,
                 maximumPercent: 100,
             },
         });
 
-        const updateDnsFunction = new lambda.Function(this, 'UpdateDns', {
-            functionName: `${gameName}-update-dns`,
+        // Used to update the ECS service DesiredCount
+        stackUpdateRole.addToPolicy(new iam.PolicyStatement({
+            effect: iam.Effect.ALLOW,
+            actions: ['ecs:DescribeServices', 'ecs:UpdateService'],
+            resources: [ecsService.ref],
+        }));
+
+
+        const updateDnsFunction = new lambda.Function(this, 'DnsUpdateFunction', {
+            functionName: `${gameName}-dns-update`,
             description: `Sets Route 53 DNS Record for ${gameName}`,
             runtime: lambda.Runtime.PYTHON_3_7,
-            handler: 'update-dns.handler',
+            handler: 'dns-update.handler',
             memorySize: 128,
             role: setDnsRole,
-            code: lambda.Code.fromAsset(path.join(__dirname, '../res')),
+            code: lambda.Code.fromAsset(path.join(__dirname, '../res/dns-update')),
             timeout: cdk.Duration.seconds(30),
             environment: {
                 HostedZoneId: hostedZoneId,
