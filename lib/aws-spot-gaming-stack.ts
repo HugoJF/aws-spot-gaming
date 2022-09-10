@@ -1,7 +1,6 @@
-import {range} from "./utils";
+import * as cdk from 'aws-cdk-lib';
 import {CfnMapping, CfnParameter, Stack, StackProps} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
-import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as efs from 'aws-cdk-lib/aws-efs';
@@ -14,44 +13,45 @@ import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as dataSync from 'aws-cdk-lib/aws-datasync';
 
+interface ExposedPorts {
+    udp: number[];
+    tcp: number[];
+}
+
+interface ContainerProps {
+    memory: number;
+    image: string;
+    userId?: number;
+    environment?: Record<string, string>;
+}
+
+interface GameServerStackProps extends StackProps {
+    usesDataSync: boolean;
+    gameName: string;
+    dnsName?: string;
+    spotPrice: string;
+    instanceType: string; // TODO ec2.InstanceClass.BURSTABLE3 + ec2.InstanceSize.MEDIUM
+    hostedZoneName: string;
+    hostedZoneId: string;
+    keyName: string;
+    imageId: string;
+    exposedPorts: ExposedPorts;
+    container: ContainerProps;
+}
+
 export class AwsSpotGamingStack extends Stack {
-    constructor(scope: Construct, id: string, props?: StackProps) {
+    constructor(scope: Construct, id: string, props: GameServerStackProps) {
         super(scope, id, props);
 
-        const usesDataSync = false;
-        const gameName = 'zomboid';
-        const dnsName = undefined;
-        const spotPrice = '0.05';
-        const instanceType = 't3.medium';
-        const hostedZoneName = 'aws.hugo.dev.br';
-        const hostedZoneId = 'Z076062914KIZVO3HUW39';
-
-        const keyName = 'MainLinux';
-        const imageId = '/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id';
-        const exposedPorts = {
-            udp: [8766, 8767, 16261],
-            tcp: [27015, ...range(16262, 16272)],
-        };
-
-        const containerMemory = 3 * 1024;
-        const containerImage = 'cyrale/project-zomboid:latest';
-        const containerUserId = 1000;
-        const containerEnvironment = {
-            RCON_PASSWORD: 'averycoolpassword',
-            ADMIN_PASSWORD: 'theadminpassword',
-            SERVER_NAME: 'servertest',
-            SERVER_PASSWORD: 'secretserver',
-            SERVER_BRANCH: 'unstable',
-        };
         const containerPortMapping: ecs.PortMapping[] = [];
-        exposedPorts.udp.forEach(port => {
+        props.exposedPorts.udp.forEach(port => {
             containerPortMapping.push({
                 containerPort: port,
                 hostPort: port,
                 protocol: ecs.Protocol.UDP,
             });
         });
-        exposedPorts.tcp.forEach(port => {
+        props.exposedPorts.tcp.forEach(port => {
             containerPortMapping.push({
                 containerPort: port,
                 hostPort: port,
@@ -59,12 +59,8 @@ export class AwsSpotGamingStack extends Stack {
             });
         });
 
-        // DO NOT MODIFY BELOW THIS LINE
-        // DO NOT MODIFY BELOW THIS LINE
-        // DO NOT MODIFY BELOW THIS LINE
-
-        const recordName = `${dnsName ?? gameName}.${hostedZoneName}`;
-        const fsMountPath = `/opt/${gameName}`;
+        const recordName = `${props.dnsName ?? props.gameName}.${props.hostedZoneName}`;
+        const fsMountPath = `/opt/${props.gameName}`;
 
         const stateParameter = new CfnParameter(this, 'ServerState', {
             type: 'String',
@@ -120,33 +116,26 @@ export class AwsSpotGamingStack extends Stack {
             roles: [instanceRole.roleName],
         });
 
-        const vpc = new ec2.Vpc(this, 'VPC', {
-            cidr: '10.0.0.0/16',
-            maxAzs: 2,
-            natGateways: 0,
-            subnetConfiguration: [{
-                cidrMask: 24,
-                name: 'Public',
-                subnetType: ec2.SubnetType.PUBLIC,
-            }],
+        const vpc = ec2.Vpc.fromLookup(this, 'VPC', {
+            isDefault: true,
         })
 
         const ec2SecurityGroup = new ec2.SecurityGroup(this, 'Ec2Sg', {
             vpc,
             allowAllOutbound: true,
-            securityGroupName: `${gameName}-ec2`,
-            description: `${gameName}-ec2`,
+            securityGroupName: `${props.gameName}-ec2`,
+            description: `${props.gameName}-ec2`,
         });
         ec2SecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(22), '[v4] Allow SSH access');
         ec2SecurityGroup.addIngressRule(ec2.Peer.anyIpv6(), ec2.Port.tcp(22), '[v6] Allow SSH access');
-        exposedPorts.udp.forEach(port => ec2SecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(port), `[v4] Allow UDP port ${port}`));
-        exposedPorts.tcp.forEach(port => ec2SecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(port), `[v4] Allow TCP port ${port}`));
+        props.exposedPorts.udp.forEach(port => ec2SecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(port), `[v4] Allow UDP port ${port}`));
+        props.exposedPorts.tcp.forEach(port => ec2SecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(port), `[v4] Allow TCP port ${port}`));
 
         const efsSecurityGroup = new ec2.SecurityGroup(this, 'EfsSg', {
             vpc,
             allowAllOutbound: true,
-            securityGroupName: `${gameName}-efs`,
-            description: `${gameName}-efs`,
+            securityGroupName: `${props.gameName}-efs`,
+            description: `${props.gameName}-efs`,
         });
         efsSecurityGroup.addIngressRule(ec2.Peer.ipv4(vpc.vpcCidrBlock), ec2.Port.tcp(2049), 'Allow EFS access');
 
@@ -160,32 +149,32 @@ export class AwsSpotGamingStack extends Stack {
         });
 
         const cluster = new ecs.CfnCluster(this, 'EcsCluster', {
-            clusterName: 'EcsCluster',
+            clusterName: `${props.gameName}-cluster`,
         });
 
         // TODO: dynamic chown
         const autoScalingLaunchConfiguration = new autoscaling.CfnLaunchConfiguration(this, 'LaunchConfiguration', {
             associatePublicIpAddress: true,
             iamInstanceProfile: instanceProfile.ref,
-            imageId: ec2.MachineImage.fromSsmParameter(imageId).getImage(this).imageId,
-            instanceType: instanceType,
-            keyName: keyName,
+            imageId: ec2.MachineImage.fromSsmParameter(props.imageId).getImage(this).imageId,
+            instanceType: props.instanceType,
+            keyName: props.keyName,
             securityGroups: [
                 ec2SecurityGroup.securityGroupId,
             ],
-            spotPrice: spotPrice,
+            spotPrice: props.spotPrice,
             userData: cdk.Fn.base64([
                 '#!/bin/bash -xe',
                 `echo ECS_CLUSTER=${cluster.ref} >> /etc/ecs/ecs.config`,
                 'yum install -y amazon-efs-utils',
                 `mkdir ${fsMountPath}`,
                 `mount -t efs ${fs.fileSystemId}:/ ${fsMountPath}`,
-                `chown ${containerUserId}:${containerUserId} ${fsMountPath}`,
-            ].join('\n')),
+                props.container.userId && `chown ${props.container.userId}:${props.container.userId} ${fsMountPath}`,
+            ].filter(Boolean).join('\n')),
         })
 
         const autoScalingGroup = new autoscaling.CfnAutoScalingGroup(this, 'AutoScalingGroup', {
-            autoScalingGroupName: `${gameName}-asg`,
+            autoScalingGroupName: `${props.gameName}-asg`,
             availabilityZones: vpc.availabilityZones,
             launchConfigurationName: autoScalingLaunchConfiguration.ref,
             desiredCapacity: desiredCapacity,
@@ -248,26 +237,27 @@ export class AwsSpotGamingStack extends Stack {
 
         const taskDefinition = new ecs.Ec2TaskDefinition(this, 'TaskDef', {
             volumes: [{
-                name: gameName,
+                name: props.gameName,
                 host: {sourcePath: fsMountPath},
             }],
         });
 
-        const container = taskDefinition.addContainer(gameName, {
-            image: ecs.ContainerImage.fromRegistry(containerImage),
-            memoryReservationMiB: containerMemory,
+        const container = taskDefinition.addContainer(props.gameName, {
+            image: ecs.ContainerImage.fromRegistry(props.container.image),
+            memoryReservationMiB: props.container.memory,
             portMappings: containerPortMapping,
-            environment: containerEnvironment,
+            environment: props.container.environment,
         });
+
         container.addMountPoints({
             containerPath: '/server-data',
-            sourceVolume: gameName,
+            sourceVolume: props.gameName,
             readOnly: false,
         })
 
         const ecsService = new ecs.CfnService(this, 'Service', {
             cluster: cluster.clusterName,
-            serviceName: gameName,
+            serviceName: props.gameName,
             taskDefinition: taskDefinition.taskDefinitionArn,
             desiredCount: desiredCapacity as any as number,
             deploymentConfiguration: {
@@ -285,8 +275,8 @@ export class AwsSpotGamingStack extends Stack {
 
 
         const updateDnsFunction = new lambda.Function(this, 'DnsUpdateFunction', {
-            functionName: `${gameName}-dns-update`,
-            description: `Sets Route 53 DNS Record for ${gameName}`,
+            functionName: `${props.gameName}-dns-update`,
+            description: `Sets Route 53 DNS Record for ${props.gameName}`,
             runtime: lambda.Runtime.PYTHON_3_7,
             handler: 'dns-update.handler',
             memorySize: 128,
@@ -294,14 +284,14 @@ export class AwsSpotGamingStack extends Stack {
             code: lambda.Code.fromAsset(path.join(__dirname, '../res/dns-update')),
             timeout: cdk.Duration.seconds(30),
             environment: {
-                HostedZoneId: hostedZoneId,
+                HostedZoneId: props.hostedZoneId,
                 RecordName: recordName,
             },
         });
 
         const launchEvent = new events.Rule(this, 'LaunchEvent', {
             enabled: true,
-            ruleName: `${gameName}-instance-launch`,
+            ruleName: `${props.gameName}-instance-launch`,
             eventPattern: {
                 source: ['aws.autoscaling'],
                 detailType: ['EC2 Instance Launch Successful'],
@@ -318,9 +308,9 @@ export class AwsSpotGamingStack extends Stack {
             action: 'lambda:InvokeFunction',
         });
 
-        if (usesDataSync) {
+        if (props.usesDataSync) {
             const workbenchBucket = new s3.Bucket(this, 'S3Bucket', {
-                bucketName: `${gameName}-data`,
+                bucketName: `${props.gameName}-data`,
                 removalPolicy: cdk.RemovalPolicy.DESTROY,
                 blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
             });
@@ -371,13 +361,13 @@ export class AwsSpotGamingStack extends Stack {
             });
 
             new dataSync.CfnTask(this, 'EfsToS3', {
-                name: `${gameName}-EfsToS3`,
+                name: `${props.gameName}-EfsToS3`,
                 sourceLocationArn: efsLocation.ref,
                 destinationLocationArn: s3Location.ref,
             });
 
             new dataSync.CfnTask(this, 'S3ToEfs', {
-                name: `${gameName}-S3ToEfs`,
+                name: `${props.gameName}-S3ToEfs`,
                 sourceLocationArn: s3Location.ref,
                 destinationLocationArn: efsLocation.ref,
             });

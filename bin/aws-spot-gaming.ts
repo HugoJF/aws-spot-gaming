@@ -2,20 +2,58 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import {AwsSpotGamingStack} from '../lib/aws-spot-gaming-stack';
+import {range} from "../lib/utils";
 
 const app = new cdk.App();
+new AwsSpotGamingStack(app, 'nginx-stack', {
+    env: {account: '186669703643', region: 'sa-east-1'},
+    usesDataSync: false,
+    gameName: 'nginx',
+    spotPrice: '0.05',
+    instanceType: 't3.nano',
+    hostedZoneName: 'aws.hugo.dev.br',
+    hostedZoneId: 'Z076062914KIZVO3HUW39',
+
+    keyName: 'MainLinux',
+    imageId: '/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id',
+    exposedPorts: {
+        tcp: [80],
+        udp: [],
+    },
+
+    container: {
+        memory: 256,
+        image: 'nginxdemos/hello',
+    }
+});
 new AwsSpotGamingStack(app, 'AwsSpotGamingStack', {
-    /* If you don't specify 'env', this stack will be environment-agnostic.
-     * Account/Region-dependent features and context lookups will not work,
-     * but a single synthesized template can be deployed anywhere. */
+    env: {account: '186669703643', region: 'sa-east-1'},
 
-    /* Uncomment the next line to specialize this stack for the AWS Account
-     * and Region that are implied by the current CLI configuration. */
-    // env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+    usesDataSync: false,
+    gameName: 'zomboid',
+    dnsName: undefined,
+    spotPrice: '0.05',
+    instanceType: 't3.medium',
+    hostedZoneName: 'aws.hugo.dev.br',
+    hostedZoneId: 'Z076062914KIZVO3HUW39',
 
-    /* Uncomment the next line if you know exactly what Account and Region you
-     * want to deploy the stack to. */
-    // env: { account: '123456789012', region: 'us-east-1' },
-    env: {region: 'sa-east-1'},
-    /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
+    keyName: 'MainLinux',
+    imageId: '/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id',
+    exposedPorts: {
+        udp: [8766, 8767, 16261],
+        tcp: [27015, ...range(16262, 16272)],
+    },
+
+    container: {
+        memory: 3 * 1024,
+        image: 'cyrale/project-zomboid:latest',
+        userId: 1000,
+        environment: {
+            RCON_PASSWORD: 'averycoolpassword',
+            ADMIN_PASSWORD: 'theadminpassword',
+            SERVER_NAME: 'servertest',
+            SERVER_PASSWORD: 'secretserver',
+            SERVER_BRANCH: 'unstable',
+        },
+    }
 });
