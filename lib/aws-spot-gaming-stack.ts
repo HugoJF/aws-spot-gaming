@@ -12,6 +12,8 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as dataSync from 'aws-cdk-lib/aws-datasync';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import {InstanceType} from "aws-cdk-lib/aws-ec2";
 
 interface ExposedPorts {
     udp: number[];
@@ -30,9 +32,11 @@ interface GameServerStackProps extends StackProps {
     gameName: string;
     dnsName?: string;
     spotPrice: string;
-    instanceType: string; // TODO ec2.InstanceClass.BURSTABLE3 + ec2.InstanceSize.MEDIUM
+    instance: {
+        class: ec2.InstanceClass,
+        size: ec2.InstanceSize,
+    }
     hostedZoneName: string;
-    hostedZoneId: string;
     keyName: string;
     imageId: string;
     exposedPorts: ExposedPorts;
@@ -152,12 +156,13 @@ export class AwsSpotGamingStack extends Stack {
             clusterName: `${props.gameName}-cluster`,
         });
 
+
         // TODO: dynamic chown
         const autoScalingLaunchConfiguration = new autoscaling.CfnLaunchConfiguration(this, 'LaunchConfiguration', {
             associatePublicIpAddress: true,
             iamInstanceProfile: instanceProfile.ref,
             imageId: ec2.MachineImage.fromSsmParameter(props.imageId).getImage(this).imageId,
-            instanceType: props.instanceType,
+            instanceType: InstanceType.of(props.instance.class, props.instance.size).toString(),
             keyName: props.keyName,
             securityGroups: [
                 ec2SecurityGroup.securityGroupId,
@@ -274,6 +279,10 @@ export class AwsSpotGamingStack extends Stack {
         }));
 
 
+        const hz = route53.HostedZone.fromLookup(this, 'HostedZone', {
+            domainName: props.hostedZoneName,
+        });
+
         const updateDnsFunction = new lambda.Function(this, 'DnsUpdateFunction', {
             functionName: `${props.gameName}-dns-update`,
             description: `Sets Route 53 DNS Record for ${props.gameName}`,
@@ -284,7 +293,7 @@ export class AwsSpotGamingStack extends Stack {
             code: lambda.Code.fromAsset(path.join(__dirname, '../res/dns-update')),
             timeout: cdk.Duration.seconds(30),
             environment: {
-                HostedZoneId: props.hostedZoneId,
+                HostedZoneId: hz.hostedZoneId,
                 RecordName: recordName,
             },
         });

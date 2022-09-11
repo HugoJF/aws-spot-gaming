@@ -3,16 +3,22 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import {AwsSpotGamingStack} from '../lib/aws-spot-gaming-stack';
 import {range} from "../lib/utils";
+import {InstanceClass, InstanceSize} from "aws-cdk-lib/aws-ec2";
 
 const app = new cdk.App();
 new AwsSpotGamingStack(app, 'nginx-stack', {
     env: {account: '186669703643', region: 'sa-east-1'},
+    tags: {
+        project: 'aws-spot-gaming',
+    },
     usesDataSync: false,
     gameName: 'nginx',
     spotPrice: '0.05',
-    instanceType: 't3.nano',
+    instance: {
+        class: InstanceClass.BURSTABLE3,
+        size: InstanceSize.NANO,
+    },
     hostedZoneName: 'aws.hugo.dev.br',
-    hostedZoneId: 'Z076062914KIZVO3HUW39',
 
     keyName: 'MainLinux',
     imageId: '/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id',
@@ -33,9 +39,11 @@ new AwsSpotGamingStack(app, 'AwsSpotGamingStack', {
     gameName: 'zomboid',
     dnsName: undefined,
     spotPrice: '0.05',
-    instanceType: 't3.medium',
+    instance: {
+        class: InstanceClass.BURSTABLE3,
+        size: InstanceSize.MEDIUM,
+    },
     hostedZoneName: 'aws.hugo.dev.br',
-    hostedZoneId: 'Z076062914KIZVO3HUW39',
 
     keyName: 'MainLinux',
     imageId: '/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id',
