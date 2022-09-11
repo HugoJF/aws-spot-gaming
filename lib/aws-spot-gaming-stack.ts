@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import {CfnMapping, CfnParameter, Stack, StackProps} from 'aws-cdk-lib';
 import {Construct} from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import {InstanceType} from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as efs from 'aws-cdk-lib/aws-efs';
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
@@ -13,7 +14,6 @@ import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as dataSync from 'aws-cdk-lib/aws-datasync';
 import * as route53 from 'aws-cdk-lib/aws-route53';
-import {InstanceType} from "aws-cdk-lib/aws-ec2";
 
 interface ExposedPorts {
     udp: number[];
@@ -47,21 +47,13 @@ export class AwsSpotGamingStack extends Stack {
     constructor(scope: Construct, id: string, props: GameServerStackProps) {
         super(scope, id, props);
 
-        const containerPortMapping: ecs.PortMapping[] = [];
-        props.exposedPorts.udp.forEach(port => {
-            containerPortMapping.push({
+        const containerPortMapping = Object.values(ecs.Protocol).flatMap(protocol => (
+            props.exposedPorts[protocol].map(port => ({
                 containerPort: port,
                 hostPort: port,
-                protocol: ecs.Protocol.UDP,
-            });
-        });
-        props.exposedPorts.tcp.forEach(port => {
-            containerPortMapping.push({
-                containerPort: port,
-                hostPort: port,
-                protocol: ecs.Protocol.TCP,
-            });
-        });
+                protocol: protocol,
+            }))
+        ))
 
         const recordName = `${props.dnsName ?? props.gameName}.${props.hostedZoneName}`;
         const fsMountPath = `/opt/${props.gameName}`;
